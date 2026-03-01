@@ -1,0 +1,18 @@
+{
+  "kind": "collectionType",
+  "collectionName": "analytics",
+  "info": {
+    "singularName": "analytic",
+    "pluralName": "analytics",
+    "displayName": "Analytic"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "note": {
+      "type": "string",
+      "default": "Virtual analytics type used to mount custom routes"
+    }
+  }
+}
