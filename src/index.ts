@@ -1,4 +1,157 @@
-// import type { Core } from '@strapi/strapi';
+import type { Core } from '@strapi/strapi';
+
+/**
+ * Permission definitions per role based on the RBAC matrix.
+ *
+ * | Role     | Orders          | Products   | Analytics | Users       |
+ * |----------|-----------------|------------|-----------|-------------|
+ * | Customer | Own only (CRUD) | Read only  | None      | Own profile |
+ * | Manager  | All (CRUD)      | All (CRUD) | None      | None        |
+ * | Admin    | All (CRUD)      | All (CRUD) | All (Read) | All (CRUD) |
+ */
+
+interface RoleDefinition {
+  name: string;
+  description: string;
+  type: string;
+  permissions: Record<string, { actions: string[] }>;
+}
+
+const ROLE_DEFINITIONS: RoleDefinition[] = [
+  {
+    name: 'Customer',
+    description: 'Default role for registered users. Can manage own orders and view products.',
+    type: 'customer',
+    permissions: {
+      'api::order.order': {
+        actions: ['find', 'findOne', 'create', 'update'],
+      },
+      'api::product.product': {
+        actions: ['find', 'findOne'],
+      },
+    },
+  },
+  {
+    name: 'Manager',
+    description: 'Can manage all orders, products, and order items.',
+    type: 'manager',
+    permissions: {
+      'api::order.order': {
+        actions: ['find', 'findOne', 'create', 'update', 'delete'],
+      },
+      'api::product.product': {
+        actions: ['find', 'findOne', 'create', 'update', 'delete'],
+      },
+      'api::order-item.order-item': {
+        actions: ['find', 'findOne', 'create', 'update', 'delete'],
+      },
+    },
+  },
+  {
+    name: 'Admin',
+    description: 'Full system access including analytics and user management.',
+    type: 'admin',
+    permissions: {
+      'api::order.order': {
+        actions: ['find', 'findOne', 'create', 'update', 'delete'],
+      },
+      'api::product.product': {
+        actions: ['find', 'findOne', 'create', 'update', 'delete'],
+      },
+      'api::order-item.order-item': {
+        actions: ['find', 'findOne', 'create', 'update', 'delete'],
+      },
+    },
+  },
+];
+
+/**
+ * Build the permissions array for a role from its definition.
+ * Each permission is an object with an `action` string in the format:
+ *   `api::content-type.content-type.actionName`
+ */
+function buildPermissions(
+  roleDef: RoleDefinition
+): { action: string }[] {
+  const permissions: { action: string }[] = [];
+
+  for (const [contentTypeUid, config] of Object.entries(roleDef.permissions)) {
+    for (const action of config.actions) {
+      permissions.push({ action: `${contentTypeUid}.${action}` });
+    }
+  }
+
+  return permissions;
+}
+
+/**
+ * Create a role with its permissions if it doesn't already exist.
+ * Returns the role (existing or newly created).
+ */
+async function ensureRole(
+  strapi: Core.Strapi,
+  roleDef: RoleDefinition
+): Promise<any> {
+  const roleService = strapi.plugin('users-permissions').service('role');
+
+  // Find all existing roles and check if this one exists
+  const existingRoles = await roleService.find();
+  const existingRole = existingRoles.find(
+    (r: any) => r.type === roleDef.type
+  );
+
+  if (existingRole) {
+    strapi.log.info(`Role "${roleDef.name}" (type: ${roleDef.type}) already exists.`);
+    return existingRole;
+  }
+
+  // Build permissions for the new role
+  const permissions = buildPermissions(roleDef);
+
+  const newRole = await roleService.createRole({
+    name: roleDef.name,
+    description: roleDef.description,
+    type: roleDef.type,
+    permissions,
+  });
+
+  strapi.log.info(`Created role "${roleDef.name}" (type: ${roleDef.type}) with ${permissions.length} permissions.`);
+  return newRole;
+}
+
+/**
+ * Set the default registration role to Customer.
+ */
+async function setDefaultRegistrationRole(strapi: Core.Strapi): Promise<void> {
+  const roleService = strapi.plugin('users-permissions').service('role');
+  const existingRoles = await roleService.find();
+  const customerRole = existingRoles.find((r: any) => r.type === 'customer');
+
+  if (!customerRole) {
+    strapi.log.warn('Customer role not found — cannot set as default registration role.');
+    return;
+  }
+
+  const pluginStore = strapi.store({
+    type: 'plugin',
+    name: 'users-permissions',
+  });
+
+  const advancedSettings: any = await pluginStore.get({ key: 'advanced' });
+
+  if (advancedSettings?.default_role !== customerRole.id) {
+    await pluginStore.set({
+      key: 'advanced',
+      value: {
+        ...advancedSettings,
+        default_role: customerRole.id,
+      },
+    });
+    strapi.log.info(`Default registration role set to "Customer" (id: ${customerRole.id}).`);
+  } else {
+    strapi.log.info('Default registration role is already set to "Customer".');
+  }
+}
 
 export default {
   /**
@@ -13,8 +166,16 @@ export default {
    * An asynchronous bootstrap function that runs before
    * your application gets started.
    *
-   * This gives you an opportunity to set up your data model,
-   * run jobs, or perform some special logic.
+   * Creates default roles (Customer, Manager, Admin) with RBAC permissions
+   * and sets Customer as the default registration role.
    */
-  bootstrap(/* { strapi }: { strapi: Core.Strapi } */) {},
+  async bootstrap({ strapi }: { strapi: Core.Strapi }) {
+    // Create all default roles with their permissions
+    for (const roleDef of ROLE_DEFINITIONS) {
+      await ensureRole(strapi, roleDef);
+    }
+
+    // Set Customer as the default role for new registrations
+    await setDefaultRegistrationRole(strapi);
+  },
 };

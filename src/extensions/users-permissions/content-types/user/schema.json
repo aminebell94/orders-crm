@@ -1,0 +1,33 @@
+{
+  "kind": "collectionType",
+  "collectionName": "up_users",
+  "info": {
+    "name": "user",
+    "description": "",
+    "singularName": "user",
+    "pluralName": "users",
+    "displayName": "User"
+  },
+  "options": {
+    "draftAndPublish": false
+  },
+  "attributes": {
+    "is_active": {
+      "type": "boolean",
+      "default": true
+    },
+    "failed_login_attempts": {
+      "type": "integer",
+      "default": 0
+    },
+    "locked_until": {
+      "type": "datetime"
+    },
+    "password_reset_token": {
+      "type": "string"
+    },
+    "password_reset_expires": {
+      "type": "datetime"
+    }
+  }
+}
