@@ -92,28 +92,35 @@ async function ensureRole(
   strapi: Core.Strapi,
   roleDef: RoleDefinition
 ): Promise<any> {
-  const roleService = strapi.plugin('users-permissions').service('role');
-
-  // Find all existing roles and check if this one exists
-  const existingRoles = await roleService.find();
-  const existingRole = existingRoles.find(
-    (r: any) => r.type === roleDef.type
-  );
+  // Query roles directly via the database layer to avoid plugin service quirks
+  const existingRole = await strapi.db.query('plugin::users-permissions.role').findOne({
+    where: { type: roleDef.type },
+  });
 
   if (existingRole) {
     strapi.log.info(`Role "${roleDef.name}" (type: ${roleDef.type}) already exists.`);
     return existingRole;
   }
 
-  // Build permissions for the new role
-  const permissions = buildPermissions(roleDef);
-
-  const newRole = await roleService.createRole({
-    name: roleDef.name,
-    description: roleDef.description,
-    type: roleDef.type,
-    permissions,
+  // Create the role
+  const newRole = await strapi.db.query('plugin::users-permissions.role').create({
+    data: {
+      name: roleDef.name,
+      description: roleDef.description,
+      type: roleDef.type,
+    },
   });
+
+  // Create permissions for the role
+  const permissions = buildPermissions(roleDef);
+  for (const perm of permissions) {
+    await strapi.db.query('plugin::users-permissions.permission').create({
+      data: {
+        action: perm.action,
+        role: newRole.id,
+      },
+    });
+  }
 
   strapi.log.info(`Created role "${roleDef.name}" (type: ${roleDef.type}) with ${permissions.length} permissions.`);
   return newRole;
@@ -123,9 +130,9 @@ async function ensureRole(
  * Set the default registration role to Customer.
  */
 async function setDefaultRegistrationRole(strapi: Core.Strapi): Promise<void> {
-  const roleService = strapi.plugin('users-permissions').service('role');
-  const existingRoles = await roleService.find();
-  const customerRole = existingRoles.find((r: any) => r.type === 'customer');
+  const customerRole = await strapi.db.query('plugin::users-permissions.role').findOne({
+    where: { type: 'customer' },
+  });
 
   if (!customerRole) {
     strapi.log.warn('Customer role not found — cannot set as default registration role.');
