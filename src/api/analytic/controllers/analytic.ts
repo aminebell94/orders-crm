@@ -1,39 +1,60 @@
 import { factories } from '@strapi/strapi';
 
+/**
+ * Database-agnostic date helpers.
+ * Detects the current DB client and returns the correct SQL fragments.
+ */
+function getDateHelpers(knex: any) {
+  const client = knex.client?.config?.client || 'postgres';
+  const isMySQL = client === 'mysql' || client === 'mysql2';
+
+  return {
+    today: isMySQL ? knex.raw('CURDATE()') : knex.raw('CURRENT_DATE'),
+    dateCol: (col: string) => isMySQL ? knex.raw(`DATE(${col})`) : knex.raw(`${col}::date`),
+    daysAgo: (days: number) =>
+      isMySQL
+        ? knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days])
+        : knex.raw(`CURRENT_DATE - INTERVAL '${days} days'`),
+    todayWhere: (col: string) =>
+      isMySQL
+        ? knex.raw(`DATE(${col}) = CURDATE()`)
+        : knex.raw(`${col}::date = CURRENT_DATE`),
+  };
+}
+
 export default factories.createCoreController('api::analytic.analytic', ({ strapi }) => ({
   async kpis(ctx) {
     try {
       const days = Math.min(Math.max(Number(ctx.request.query.range || 30), 1), 365);
       const knex = strapi.db.connection;
+      const d = getDateHelpers(knex);
 
-      // counts
       const { c_today } = await knex('orders')
         .count<{ c_today: number }>({ c_today: '*' })
-        .whereRaw('DATE(created_at) = CURDATE()')
+        .whereRaw(d.todayWhere('created_at'))
         .first();
 
       const { c_7 } = await knex('orders')
         .count<{ c_7: number }>({ c_7: '*' })
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL 7 DAY)'))
+        .where('created_at', '>=', d.daysAgo(7))
         .first();
 
       const { c_30 } = await knex('orders')
         .count<{ c_30: number }>({ c_30: '*' })
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days]))
+        .where('created_at', '>=', d.daysAgo(days))
         .first();
 
-      // revenue sums (use orders.total_price)
       const [{ r_today }] = await knex('orders')
         .sum<{ r_today: string | number }>({ r_today: 'total_price' })
-        .whereRaw('DATE(created_at) = CURDATE()');
+        .whereRaw(d.todayWhere('created_at'));
 
       const [{ r_7 }] = await knex('orders')
         .sum<{ r_7: string | number }>({ r_7: 'total_price' })
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL 7 DAY)'));
+        .where('created_at', '>=', d.daysAgo(7));
 
       const [{ r_30 }] = await knex('orders')
         .sum<{ r_30: string | number }>({ r_30: 'total_price' })
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days]));
+        .where('created_at', '>=', d.daysAgo(days));
 
       ctx.body = {
         ordersToday: Number(c_today || 0),
@@ -52,15 +73,15 @@ export default factories.createCoreController('api::analytic.analytic', ({ strap
     try {
       const days = Math.min(Math.max(Number(ctx.request.query.range || 30), 1), 365);
       const knex = strapi.db.connection;
+      const d = getDateHelpers(knex);
 
       const rows = await knex('orders')
-        .select(knex.raw('DATE(created_at) AS day'))
+        .select(d.dateCol('created_at').wrap('(', ') AS day'))
         .sum({ revenue: 'total_price' })
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days]))
-        .groupBy('day')
+        .where('created_at', '>=', d.daysAgo(days))
+        .groupByRaw(d.dateCol('created_at'))
         .orderBy('day', 'asc');
 
-      // shape: [{ date, revenue }]
       ctx.body = rows.map((r: any) => ({
         date: r.day?.toISOString ? r.day.toISOString().slice(0, 10) : String(r.day),
         revenue: Number(r.revenue || 0),
@@ -91,42 +112,18 @@ export default factories.createCoreController('api::analytic.analytic', ({ strap
     }
   },
 
-  // optional combined endpoint if you prefer one call
   async summary(ctx) {
     try {
       const days = Math.min(Math.max(Number(ctx.request.query.range || 30), 1), 365);
       const knex = strapi.db.connection;
+      const d = getDateHelpers(knex);
 
-      // Fetch KPIs with null safety
-      const todayCount = await knex('orders')
-        .count('* as count')
-        .whereRaw('DATE(created_at) = CURDATE()')
-        .first();
-
-      const week7Count = await knex('orders')
-        .count('* as count')
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL 7 DAY)'))
-        .first();
-
-      const daysCount = await knex('orders')
-        .count('* as count')
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days]))
-        .first();
-
-      const todayRevenue = await knex('orders')
-        .sum('total_price as total')
-        .whereRaw('DATE(created_at) = CURDATE()')
-        .first();
-
-      const week7Revenue = await knex('orders')
-        .sum('total_price as total')
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL 7 DAY)'))
-        .first();
-
-      const daysRevenue = await knex('orders')
-        .sum('total_price as total')
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days]))
-        .first();
+      const todayCount = await knex('orders').count('* as count').whereRaw(d.todayWhere('created_at')).first();
+      const week7Count = await knex('orders').count('* as count').where('created_at', '>=', d.daysAgo(7)).first();
+      const daysCount = await knex('orders').count('* as count').where('created_at', '>=', d.daysAgo(days)).first();
+      const todayRevenue = await knex('orders').sum('total_price as total').whereRaw(d.todayWhere('created_at')).first();
+      const week7Revenue = await knex('orders').sum('total_price as total').where('created_at', '>=', d.daysAgo(7)).first();
+      const daysRevenue = await knex('orders').sum('total_price as total').where('created_at', '>=', d.daysAgo(days)).first();
 
       const kpis = {
         ordersToday: Number(todayCount?.count || 0),
@@ -137,12 +134,11 @@ export default factories.createCoreController('api::analytic.analytic', ({ strap
         revenue30d: Number(daysRevenue?.total || 0),
       };
 
-      // Fetch revenue by day
       const revenueRows = await knex('orders')
-        .select(knex.raw('DATE(created_at) AS day'))
+        .select(knex.raw('created_at::date AS day'))
         .sum('total_price as revenue')
-        .where('created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days]))
-        .groupBy(knex.raw('DATE(created_at)'))
+        .where('created_at', '>=', d.daysAgo(days))
+        .groupByRaw('created_at::date')
         .orderBy('day', 'asc');
 
       const revenueByDay = revenueRows.map((r: any) => ({
@@ -150,12 +146,7 @@ export default factories.createCoreController('api::analytic.analytic', ({ strap
         revenue: Number(r.revenue || 0),
       }));
 
-      // Fetch order status
-      const statusRows = await knex('orders')
-        .select('order_status')
-        .count('* as count')
-        .groupBy('order_status');
-
+      const statusRows = await knex('orders').select('order_status').count('* as count').groupBy('order_status');
       const total = statusRows.reduce((acc, r: any) => acc + Number(r.count || 0), 0) || 1;
 
       const ordersByStatus = statusRows.map((r: any) => ({
@@ -164,17 +155,10 @@ export default factories.createCoreController('api::analytic.analytic', ({ strap
         percentage: Math.round((Number(r.count || 0) * 100) / total),
       }));
 
-      ctx.body = { 
-        kpis, 
-        revenueByDay, 
-        ordersByStatus 
-      };
+      ctx.body = { kpis, revenueByDay, ordersByStatus };
     } catch (error) {
       strapi.log.error('Analytics summary error:', error);
-      ctx.throw(500, 'Failed to fetch analytics summary', { 
-        details: error.message,
-        stack: error.stack 
-      });
+      ctx.throw(500, 'Failed to fetch analytics summary', { details: error.message });
     }
   },
 
@@ -183,6 +167,7 @@ export default factories.createCoreController('api::analytic.analytic', ({ strap
       const limit = Math.min(Math.max(Number(ctx.request.query.limit || 10), 1), 50);
       const days = Math.min(Math.max(Number(ctx.request.query.range || 30), 1), 365);
       const knex = strapi.db.connection;
+      const d = getDateHelpers(knex);
 
       const rows = await knex('order_items')
         .join('products', 'order_items.product', '=', 'products.id')
@@ -191,7 +176,7 @@ export default factories.createCoreController('api::analytic.analytic', ({ strap
         .sum({ totalQuantity: 'order_items.quantity' })
         .sum({ totalRevenue: knex.raw('order_items.quantity * order_items.unit_price') })
         .count({ orderCount: 'order_items.id' })
-        .where('orders.created_at', '>=', knex.raw('DATE_SUB(CURDATE(), INTERVAL ? DAY)', [days]))
+        .where('orders.created_at', '>=', d.daysAgo(days))
         .groupBy('products.id', 'products.name', 'products.sku')
         .orderBy('totalQuantity', 'desc')
         .limit(limit);
