@@ -177,12 +177,20 @@ export default {
    * and sets Customer as the default registration role.
    */
   async bootstrap({ strapi }: { strapi: Core.Strapi }) {
-    // Create all default roles with their permissions
-    for (const roleDef of ROLE_DEFINITIONS) {
-      await ensureRole(strapi, roleDef);
-    }
+    try {
+      // Create all default roles with their permissions
+      for (const roleDef of ROLE_DEFINITIONS) {
+        await ensureRole(strapi, roleDef);
+      }
 
-    // Set Customer as the default role for new registrations
-    await setDefaultRegistrationRole(strapi);
+      // Set Customer as the default role for new registrations
+      await setDefaultRegistrationRole(strapi);
+    } catch (error: any) {
+      // On first boot with a fresh database, tables may not exist yet.
+      // The users-permissions plugin will create them during its own bootstrap.
+      // Our roles will be created on the next restart.
+      strapi.log.warn(`Custom role bootstrap skipped (likely first boot): ${error.message}`);
+      strapi.log.info('Roles will be created on next restart after schema sync completes.');
+    }
   },
 };
