@@ -177,6 +177,17 @@ export default {
    * and sets Customer as the default registration role.
    */
   async bootstrap({ strapi }: { strapi: Core.Strapi }) {
+    // Check if the database schema is ready by testing a simple query.
+    // On first boot with a fresh database, Strapi's internal schema sync
+    // must complete before we can create custom roles.
+    try {
+      await strapi.db.query('plugin::users-permissions.role').count();
+    } catch {
+      strapi.log.warn('Database schema not ready yet (first boot). Skipping custom role setup.');
+      strapi.log.info('Restart the server after first boot to create custom roles.');
+      return;
+    }
+
     try {
       // Create all default roles with their permissions
       for (const roleDef of ROLE_DEFINITIONS) {
@@ -186,11 +197,7 @@ export default {
       // Set Customer as the default role for new registrations
       await setDefaultRegistrationRole(strapi);
     } catch (error: any) {
-      // On first boot with a fresh database, tables may not exist yet.
-      // The users-permissions plugin will create them during its own bootstrap.
-      // Our roles will be created on the next restart.
-      strapi.log.warn(`Custom role bootstrap skipped (likely first boot): ${error.message}`);
-      strapi.log.info('Roles will be created on next restart after schema sync completes.');
+      strapi.log.warn(`Custom role bootstrap failed: ${error.message}`);
     }
   },
 };
